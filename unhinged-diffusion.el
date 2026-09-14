@@ -82,6 +82,15 @@ If PROFILE is nil or not found, returns all available tools."
   (let ((all-tools (append (bound-and-true-p eai-tool-library-unhinged-diffusion-tools)
                            (bound-and-true-p eai-tool-library-unhinged-diffusion-tools-maybe-safe)))
         (wanted (cdr (assq profile unhinged-diffusion-tool-profiles))))
+    (unless unhinged-diffusion-allow-step-notes
+      ;; Notes hand-off switched off: drop the tool from whatever
+      ;; the profile says.
+      (setq all-tools
+            (seq-remove (lambda (tool)
+                          (and (eq (type-of tool) 'gptel-tool)
+                               (string= (gptel-tool-name tool)
+                                        "diffusion-set-notes")))
+                        all-tools)))
     (seq-filter (lambda (tool)
                   (and (eq (type-of tool) 'gptel-tool)
                        (not (string= (gptel-tool-name tool)
@@ -396,6 +405,8 @@ the whole request triggers one nudge retry of the same step."
               (setq unhinged-diffusion--step step))
             ;; File the model's narration under this step's picture.
             (unhinged-diffusion--insert-step-commentary buffer step total response)
+            ;; Stash the narration for the next step's hand-off.
+            (plist-put run :last-commentary response)
             ;; Step succeeded: reset the 429 backoff counter.
             (plist-put run :retries 0)
             (if (and (zerop tool-rounds)
@@ -467,6 +478,13 @@ the whole request triggers one nudge retry of the same step."
             (message "Unhinged diffusion step %d/%d: unexpected response %S"
                      step total response))))))))
 
+(defun unhinged-diffusion--clip-text (text max)
+  "Return TEXT truncated to MAX characters with an ellipsis.
+MAX nil or non-positive means no truncation."
+  (if (or (not (natnump max)) (<= (length text) max))
+      text
+    (concat (substring text 0 max) "…")))
+
 (defun unhinged-diffusion--execute-step (buffer prompt step total)
   "Execute a single diffusion STEP on BUFFER.
 
@@ -495,7 +513,24 @@ This is the synchronous-ish entry point that fires the gptel request."
                ;; Nudged step: the model previously narrated without
                ;; calling any tool.  Force it to act this time.
                (when (eq (plist-get run :nudge-step) step)
-                 "\n\nIMPORTANT: Your previous reply only described what you intended to do, without calling any tools. Apply those changes NOW by calling the canvas tools. You must issue at least one tool call; do not just describe.")))
+                 "\n\nIMPORTANT: Your previous reply only described what you intended to do, without calling any tools. Apply those changes NOW by calling the canvas tools. You must issue at least one tool call; do not just describe.")
+               ;; Hand-off: notes recorded by earlier steps and the
+               ;; previous step's commentary give the model continuity
+               ;; about structures it already started (the role the
+               ;; latent plays in a real diffusion model).
+               (when (and unhinged-diffusion-pass-commentary
+                          (> step 1)
+                          (plist-get run :last-commentary))
+                 (format "\n\nNotes from the previous step: %s"
+                         (unhinged-diffusion--clip-text
+                          (plist-get run :last-commentary)
+                          unhinged-diffusion-notes-max-length)))
+               (let ((notes (buffer-local-value 'unhinged-diffusion--notes buffer)))
+                 (when (and unhinged-diffusion-allow-step-notes notes)
+                   (format "\n\nComposition notes recorded by you in earlier steps (keep refining these structures where they are; do not start them a second time): %s"
+                           (unhinged-diffusion--clip-text
+                            notes
+                            unhinged-diffusion-notes-max-length))))))
              (profile (plist-get run :profile))
              (tools (unhinged-diffusion--tools-for-profile profile))
              ;; New request generation: invalidate callbacks from any
@@ -621,7 +656,9 @@ Runs via async gptel callbacks. This is the low-level orchestration entry point.
     (with-current-buffer buffer
       (setq unhinged-diffusion--prompt prompt)
       (setq unhinged-diffusion--total-steps total)
-      (setq unhinged-diffusion--step 0))
+      (setq unhinged-diffusion--step 0)
+      ;; A fresh run starts with a clean notes slate.
+      (setq unhinged-diffusion--notes nil))
     (puthash (buffer-name buffer)
              `(:prompt ,prompt :step 0 :total ,total :status running
                        :backend ,gptel-backend :model ,gptel-model

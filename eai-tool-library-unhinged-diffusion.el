@@ -417,5 +417,35 @@ Call this when the image needs more refinement than originally planned."
                      :description "The name of the diffusion canvas buffer."))
  :category "unhinged-diffusion")
 
+;; Hand-off notes: let the model pin down emerging structures between steps
+
+(defun eai-tool-library-unhinged-diffusion--set-notes (buffer notes)
+  "Record emerging-structure NOTES for BUFFER's diffusion run.
+The notes replace any recorded earlier and are quoted in later
+steps' prompts, so the model keeps refining started structures
+instead of starting them a second time."
+  (with-current-buffer (eai-tool-library-unhinged-diffusion--resolve-buffer buffer)
+    (let ((text (and (stringp notes) (> (length notes) 0) notes)))
+      (setq unhinged-diffusion--notes text)
+      (if text
+          (unhinged-diffusion-canvas--log-edit "notes: %s" text)
+        (unhinged-diffusion-canvas--log-edit "notes cleared"))
+      (if text
+          (format "Notes recorded.  They will be quoted in later steps: %s" text)
+        "Notes cleared."))))
+
+(eai-tool-library-make-tools-and-register
+ 'eai-tool-library-unhinged-diffusion-tools
+ :function #'eai-tool-library-unhinged-diffusion--set-notes
+ :name "diffusion-set-notes"
+ :description "Record composition notes for later diffusion steps: major structures you have started and their locations, as absolute canvas pixel coordinates.  Call this whenever you begin a significant structure (subject, head, horizon, large region) so later steps keep refining it in place instead of starting a duplicate elsewhere.  Replaces all previously recorded notes, so include everything still relevant."
+ :args (list '(:name "buffer"
+                     :type string
+                     :description "The name of the diffusion canvas buffer.")
+             '(:name "notes"
+                     :type string
+                     :description "The notes, as a short factual list.  Example: 'head outline emerging around (150,20)-(220,90); sky above y=60; grass below y=200'."))
+ :category "unhinged-diffusion")
+
 (provide 'eai-tool-library-unhinged-diffusion)
 ;;; eai-tool-library-unhinged-diffusion.el ends here

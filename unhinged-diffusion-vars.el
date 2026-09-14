@@ -31,6 +31,7 @@
 (defcustom unhinged-diffusion-tool-profiles
   '((filters
      "diffusion-get-status"
+     "diffusion-set-notes"
      "diffusion-blur-region"
      "diffusion-sharpen-region"
      "diffusion-add-noise"
@@ -39,6 +40,7 @@
      "diffusion-request-extra-steps")
     (full
      "diffusion-get-status"
+     "diffusion-set-notes"
      "diffusion-blur-region"
      "diffusion-sharpen-region"
      "diffusion-add-noise"
@@ -129,6 +131,30 @@ A stalled step's request is aborted and the step retried."
   :type 'integer
   :group 'unhinged-diffusion)
 
+(defcustom unhinged-diffusion-pass-commentary t
+  "If non-nil, include the previous step's final commentary in the
+next step's prompt, giving the model continuity about what it started
+where.  This plays the role of the latent state a real diffusion model
+carries between steps."
+  :type 'boolean
+  :group 'unhinged-diffusion)
+
+(defcustom unhinged-diffusion-allow-step-notes t
+  "If non-nil, provide the `diffusion-set-notes' tool so the model
+can explicitly record emerging structures and their coordinates,
+which are then injected into later steps' prompts.  Analogous to
+layout conditioning (GLIGEN-style grounding)."
+  :type 'boolean
+  :group 'unhinged-diffusion)
+
+(defcustom unhinged-diffusion-notes-max-length 1000
+  "Maximum characters of hand-off notes injected into a step prompt.
+Applies to both step notes and the previous step's commentary.
+nil disables truncation."
+  :type '(choice (integer :tag "Maximum characters")
+                 (const :tag "Unlimited" nil))
+  :group 'unhinged-diffusion)
+
 (defcustom unhinged-diffusion-commentary-max-length 1000
   "Maximum characters of a model response inserted as step commentary.
 
@@ -160,6 +186,14 @@ them as given, and never infer a different scale from the displayed image.
 When establishing composition, regions should span the full canvas range
 quoted in the step prompt.
 
+Hand-off notes: every step prompt includes composition notes recorded in
+earlier steps.  If the diffusion-set-notes tool is available, use it to
+record each major structure as you start it, with its location (for
+example \"head outline emerging around (150,20)-(220,90)\").  Keep the
+notes short and factual, replacing outdated entries.  Never start a
+second copy of a structure the notes already place on the canvas —
+continue refining it where it is.
+
 Phase guidance by step:
 - Early steps (1–3): focus on large-scale composition.  Place sky, ground, and
   subject blobs.  Use large regions and low alpha (10–40).
@@ -188,13 +222,19 @@ and specify how many additional steps you need."
 (defvar-local unhinged-diffusion--total-steps nil
   "Total number of diffusion steps.")
 
+(defvar-local unhinged-diffusion--notes nil
+  "Composition notes recorded by the model during a run.
+Via the `diffusion-set-notes' tool: emerging structures and their
+coordinates, handed from one step to the next.")
+
 ;; orchestration state tracking
 (defvar unhinged-diffusion--active-runs (make-hash-table :test 'equal)
   "A hash table mapping buffer names to active diffusion run states.
 
 Each value is a plist with keys :prompt :step :total :status :timer
-:watchdog :fsm :epoch :retries :nudge-step :prompt-buffers :backend
-:model :profile.  Status is one of running, done, error, cancelled.")
+:watchdog :fsm :epoch :retries :nudge-step :last-commentary
+:prompt-buffers :backend :model :profile.  Status is one of
+running, done, error, cancelled.")
 
 (provide 'unhinged-diffusion-vars)
 
