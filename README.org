@@ -35,6 +35,8 @@ To even the playing field we provide some simple drawing primitives for lines, c
 
 * Results
 
+Complete sample runs are available in the [[./runs/][runs]] directory.
+
 [[./img/results/unhinged-diffusion-d0ftV2.png]] [[./img/results/unhinged-diffusion-Lb2dzD.png]] [[./img/results/unhinged-diffusion-a8481a.png]]
 [[./img/results/unhinged-diffusion-DimFmD.png]] [[./img/results/unhinged-diffusion-m7cc8z.png]] [[./img/results/unhinged-diffusion-5b1ebc.png]]
 [[./img/results/unhinged-diffusion-hZ4KZP.png]] [[./img/results/unhinged-diffusion-MVcm86.png]] [[./img/results/unhinged-diffusion-T066Q8.png]]
