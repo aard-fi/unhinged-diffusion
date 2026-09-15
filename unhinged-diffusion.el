@@ -147,6 +147,125 @@ Returns a cons (FILE-PATH . ACTUAL-FORMAT)."
         (delete-file tmp-ppm)
         (cons tmp-img "png")))))
 
+(defun unhinged-diffusion--slugify (text max)
+  "Return a filesystem-safe slug from TEXT, trimmed to MAX chars.
+
+Returns \"run\" when nothing usable is left after sanitising."
+  (let ((slug (replace-regexp-in-string "[^A-Za-z0-9]+" "-" text)))
+    (setq slug (replace-regexp-in-string "\\`-+\\|-+\\'" "" slug))
+    (when (> (length slug) max)
+      (setq slug (substring slug 0 max)))
+    (setq slug (replace-regexp-in-string "-\\'" "" slug))
+    (if (= (length slug) 0) "run" slug)))
+
+(defun unhinged-diffusion--short-uid ()
+  "Return a short random identifier for a run, e.g. \"a3f2c1\"."
+  (format "%06x" (random 16777216)))
+
+(defun unhinged-diffusion--run-dir (buffer)
+  "Return the output directory for BUFFER's run, or nil.
+
+The directory is derived from `unhinged-diffusion-output-directory',
+the run's human prompt, its short uid, and the model name.  It is
+created with its parents if needed."
+  (let ((root unhinged-diffusion-output-directory))
+    (when (and root (stringp root) (> (length root) 0))
+      (let* ((run (gethash (buffer-name buffer)
+                           unhinged-diffusion--active-runs))
+             (prompt (or (plist-get run :prompt) "run"))
+             (uid (or (plist-get run :uid) "run"))
+             (model (or (plist-get run :model) "default"))
+             (dir (expand-file-name
+                   (format "%s/%s-%s"
+                           (unhinged-diffusion--slugify prompt 40)
+                           uid
+                           (unhinged-diffusion--slugify
+                            (format "%s" model) 40))
+                   root)))
+        (make-directory dir t)
+        dir))))
+
+(defun unhinged-diffusion--save-step-image (buffer img-file format step total)
+  "Save the just-generated step image IMAGE-FILE to the run output directory.
+
+The output directory is determined based on BUFFER, if configured. The FORMAT is
+the actual image format of IMG-FILE.  Returns the saved path, or nil when saving
+is off or failed."
+  (let ((dir (condition-case err
+                 (unhinged-diffusion--run-dir buffer)
+               (error
+                (message "Unhinged diffusion: cannot create output directory: %S"
+                         err)
+                nil))))
+    (when dir
+      (let ((target (expand-file-name
+                     (format "step-%02d-of-%d.%s" step total format)
+                     dir)))
+        (condition-case err
+            (progn
+              (copy-file img-file target t)
+              target)
+          (error
+           (message "Unhinged diffusion: failed to save step image: %S" err)
+           nil))))))
+
+(defun unhinged-diffusion--save-final-image (buffer)
+  "Export BUFFER's canvas and save it as final.
+
+This ensures we have a complete state including the final result saved in the
+output directory.  Returns the saved path, or nil when saving is off or failed."
+  (condition-case err
+      (when-let* ((dir (unhinged-diffusion--run-dir buffer))
+                  (res (unhinged-diffusion-canvas-to-image-file buffer)))
+        (let ((target (expand-file-name
+                       (concat "final." (cdr res)) dir)))
+          (copy-file (car res) target t)
+          target))
+    (error
+     (message "Unhinged diffusion: failed to save final image: %S" err)
+     nil)))
+
+(defun unhinged-diffusion--finalise-buffer (buffer final)
+  "Replace BUFFER's canvas with a link to final image, and save the org file.
+
+With the buffer anchored to the output directory and all step images already
+saved there as relative links, the saved org file plus images form a
+self-contained record of the run."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      ;; Swap the canvas overlay for a link to the final image.
+      (let ((ov (cl-find-if
+                 (lambda (o)
+                   (overlay-get o 'unhinged-diffusion-canvas-overlay))
+                 (overlays-in (point-min) (point-max)))))
+        (when ov
+          (let ((start (overlay-start ov))
+                (end (overlay-end ov)))
+            (delete-overlay ov)
+            (delete-region start end)
+            (goto-char start)
+            (insert (format "[[file:%s]]\n"
+                            (file-relative-name final default-directory)))
+            ;; Render the final image inline in place of the canvas.
+            (when (fboundp 'org-display-inline-images)
+              (org-display-inline-images nil t start (point))))))
+      ;; Save the org file next to the images.  The buffer starts
+      ;; out unbound to a file, so give it its name now.
+      (unless buffer-file-name
+        (let* ((run (gethash (buffer-name buffer)
+                             unhinged-diffusion--active-runs))
+               (prompt (or (plist-get run :prompt) "run"))
+               (name (concat (unhinged-diffusion--slugify prompt 40)
+                             ".org")))
+          (set-visited-file-name (expand-file-name name default-directory))))
+      (condition-case err
+          (progn
+            (basic-save-buffer)
+            (message "Unhinged diffusion: org file written to %s"
+                     buffer-file-name))
+        (error
+         (message "Unhinged diffusion: failed to save org file: %S" err))))))
+
 ;;;; Modeline activity indicator, highly experimental code
 ;;
 ;; Problem is that steps take so long, so we'd like to have some indicator
@@ -268,6 +387,15 @@ Lines are indented so org cannot misinterpret them as headings."
       (when-let* ((watchdog (plist-get run :watchdog)))
         (cancel-timer watchdog)
         (plist-put run :watchdog nil))
+      ;; Persist the final image when the run completed and an
+      ;; output directory is configured.  Then finalise the buffer:
+      ;; canvas overlay swapped for the final image, org file saved
+      ;; next to the images.
+      (when (and (buffer-live-p buffer) (eq status 'done))
+        (let ((final (unhinged-diffusion--save-final-image buffer)))
+          (when final
+            (message "Unhinged diffusion: final image saved to %s" final)
+            (unhinged-diffusion--finalise-buffer buffer final))))
       (when-let* ((prompt-bufs (plist-get run :prompt-buffers)))
         (dolist (pb prompt-bufs)
           (when (buffer-live-p pb)
@@ -495,6 +623,12 @@ This is the synchronous-ish entry point that fires the gptel request."
       (message "Unhinged diffusion step %d/%d..." step total)
       (let* ((img-result (unhinged-diffusion-canvas-to-image-file buffer))
              (img-file (car img-result))
+             ;; Permanently save the step image when an output directory is
+             ;; configured, and prefer the saved copy for the buffer link so it
+             ;; survives temp cleanup.
+             (img-saved (unhinged-diffusion--save-step-image
+                         buffer img-file (cdr img-result) step total))
+             (img-file (or img-saved img-file))
              (phase (cond ((<= step (max 1 (floor (* total 0.3)))) "composition")
                           ((<= step (max 1 (floor (* total 0.7)))) "refinement")
                           (t "detail")))
@@ -558,7 +692,11 @@ This is the synchronous-ish entry point that fires the gptel request."
                    2 (format "Step %d/%d" step total)
                    unhinged-diffusion--prop-step-snapshot snapshot-id)
                   (let ((beg (point)))
-                    (insert (format "[[file:%s]]\n" img-file))
+                    (insert (format "[[file:%s]]\n"
+                                    (if img-saved
+                                        (file-relative-name
+                                         img-file default-directory)
+                                      img-file)))
                     (message "Step %d/%d: inserted [[file:%s]] into Step History"
                              step total img-file)
                     ;; Render the just-inserted link inline; org only
@@ -661,10 +799,22 @@ Runs via async gptel callbacks. This is the low-level orchestration entry point.
       (setq unhinged-diffusion--notes nil))
     (puthash (buffer-name buffer)
              `(:prompt ,prompt :step 0 :total ,total :status running
+                       :uid ,(unhinged-diffusion--short-uid)
                        :backend ,gptel-backend :model ,gptel-model
                        :prompt-buffers nil :profile ,profile :epoch 0 :retries 0)
              unhinged-diffusion--active-runs)
     (unhinged-diffusion--activity-start)
+    ;; With an output directory configured, anchor the buffer there
+    ;; so org links can be written relative and the org file saved
+    ;; alongside the images.
+    (when (and unhinged-diffusion-output-directory
+               (buffer-live-p buffer))
+      (let ((dir (condition-case nil
+                     (unhinged-diffusion--run-dir buffer)
+                   (error nil))))
+        (when dir
+          (with-current-buffer buffer
+            (setq-local default-directory dir)))))
     (unhinged-diffusion--execute-step buffer prompt 1 total)))
 
 (defun unhinged-diffusion--abort-gptel-request (fsm &optional quiet)

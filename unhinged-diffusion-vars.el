@@ -155,6 +155,16 @@ nil disables truncation."
                  (const :tag "Unlimited" nil))
   :group 'unhinged-diffusion)
 
+(defcustom unhinged-diffusion-output-directory nil
+  "Directory to permanently save a run's images to, or nil.
+
+When non-nil, every run writes its step images and the final image
+to ROOT/PROMPT-SLUG/RUN-UID-MODEL/, instead of only using temporary
+files.  PROMPT-SLUG is derived from the human prompt of the run."
+  :type '(choice (const :tag "Off (temp files only)" nil)
+                 (directory :tag "Output root directory"))
+  :group 'unhinged-diffusion)
+
 (defcustom unhinged-diffusion-commentary-max-length 1000
   "Maximum characters of a model response inserted as step commentary.
 
