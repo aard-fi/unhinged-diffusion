@@ -1,6 +1,8 @@
 * unhinged diffusion                                                  :TOC_4:
 - [[#introduction][Introduction]]
+- [[#results][Results]]
 - [[#getting-started][Getting started]]
+- [[#configuration][Configuration]]
 - [[#status-and-implementation-details][Status and implementation details]]
 
 * Introduction
@@ -31,6 +33,13 @@ Our cosplayer is at a slight disadvantage - stable diffusion got trained "given 
 
 To even the playing field we provide some simple drawing primitives for lines, circles and rectangles. If you think that's unfair you can filter those tools out, though.
 
+* Results
+
+[[./img/results/unhinged-diffusion-d0ftV2.png]] [[./img/results/unhinged-diffusion-Lb2dzD.png]] [[./img/results/unhinged-diffusion-a8481a.png]]
+[[./img/results/unhinged-diffusion-DimFmD.png]] [[./img/results/unhinged-diffusion-m7cc8z.png]] [[./img/results/unhinged-diffusion-5b1ebc.png]]
+[[./img/results/unhinged-diffusion-hZ4KZP.png]] [[./img/results/unhinged-diffusion-MVcm86.png]] [[./img/results/unhinged-diffusion-T066Q8.png]]
+[[./img/results/unhinged-diffusion-kMMWoU.png]] [[./img/results/unhinged-diffusion-n9n3jJ.png]] [[./img/results/unhinged-diffusion-t0WN7O.png]]
+
 * Getting started
 
 You'll need Emacs with canvas support. This means either unstable Emacs, or Emacs 31 with [[https://github.com/minad/emacs-canvas-patch][canvas patch]]. The patch there may not apply against the release tarball - but [[./canvas-31.patch]] does. You can use the above repository to check if it works.
@@ -50,6 +59,14 @@ You can interactively start a run with =M-x unhinged-diffusion=, though at this 
 This will create a new run, in a new buffer, for an image with a size of 256x256 pixels, and try to have kimi on the =ollama-mac= gptel backend use all available tools to draw a cat. Expect this to take about 30 minutes. Tool calls, step images as well as commentary what it is trying to achieve will be added to this buffer.
 
 You can follow along in the =*unhinged-diffusion-debug*= buffer, if you want to see what's going on behind the scenes.
+
+* Configuration
+
+To keep the results you can set =unhinged-diffusion-output-directory= to the path of a directory. This will move the step images from a temporary location to a run specific subdirectory there, export the final canvas to =final.png=, and save the org-file with the original prompt as the filename.
+
+To compensate for having to re-interpret the latent from scratch every run we allow passing composition notes. To disable that (which results in a less tight composition) you can set =unhinged-diffusion-pass-commentary= to =nil= to disable passing the models commentary about the last step forward, and =unhinged-diffusion-allow-step-notes= to =nil= to disable saving a note persisting over all steps.
+
+=unhinged-diffusion-notes-max-length= can limit the maximum allowed length of text passing, it defaults to =1000=.
 
 * Status and implementation details
 
