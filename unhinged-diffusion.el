@@ -397,12 +397,70 @@ Lines are indented so org cannot misinterpret them as headings."
             (message "Unhinged diffusion: final image saved to %s" final)
             (unhinged-diffusion--finalise-buffer buffer final))))
       (when-let* ((prompt-bufs (plist-get run :prompt-buffers)))
-        (dolist (pb prompt-bufs)
-          (when (buffer-live-p pb)
-            (kill-buffer pb)))
+        ;; Any request still running against these buffers (e.g. a
+        ;; superseded attempt that outlived its epoch) would hit
+        ;; "Selecting deleted buffer" in gptel's process sentinel when
+        ;; its response arrives.  Kill those first, then clean up
+        ;; deferred.
+        (unhinged-diffusion--abort-requests-for-buffers
+         prompt-bufs (plist-get run :fsm))
+        (unhinged-diffusion--cleanup-prompt-buffers prompt-bufs)
         (plist-put run :prompt-buffers nil)))
     ;; Stop the pulse once no run is active anymore.
     (unhinged-diffusion--activity-stop)))
+
+(defun unhinged-diffusion--prompt-buffer-in-use-p (prompt-buf)
+  "Return t if any pending gptel request still runs in PROMPT-BUF.
+
+gptel keeps its network process in its own scratch buffer, so the
+prompt buffer itself never has a process; the request registry is
+the only reliable place to check."
+  (and (boundp 'gptel--request-alist) gptel--request-alist
+       (cl-some
+        (lambda (entry)
+          (when-let* ((fsm (cadr entry))
+                      (info (condition-case nil
+                                (gptel-fsm-info fsm)
+                              (error nil))))
+            (eq (plist-get info :buffer) prompt-buf)))
+        gptel--request-alist)))
+
+(defun unhinged-diffusion--abort-requests-for-buffers (prompt-bufs &optional keep-fsm)
+  "Abort every pending gptel request running in one of PROMPT-BUFS.
+
+Skips KEEP-FSM, the run's own current request which the caller
+handles separately.  Returns the number of requests aborted."
+  (let ((aborted 0))
+    (when (boundp 'gptel--request-alist)
+      (dolist (entry gptel--request-alist)
+        (let* ((fsm (cadr entry))
+               (info (when fsm (condition-case nil
+                                  (gptel-fsm-info fsm)
+                                (error nil)))))
+          (when (and fsm (not (eq fsm keep-fsm))
+                     (memq (plist-get info :buffer) prompt-bufs))
+            (when (unhinged-diffusion--abort-gptel-request fsm 'quiet)
+              (setq aborted (1+ aborted)))))))
+    aborted))
+
+(defun unhinged-diffusion--cleanup-prompt-buffers (prompt-bufs)
+  "Kill gptel prompt buffers PROMPT-BUFS once their requests are gone.
+
+A prompt buffer is safe to kill when no pending gptel request
+still points at it; buffers still in use are re-scheduled for a
+later check, and already-dead buffers are just dropped."
+  (let ((remaining nil))
+    (dolist (pb prompt-bufs)
+      (cond
+       ((not (buffer-live-p pb)))
+       ;; A request is still winding down: try again shortly.
+       ((unhinged-diffusion--prompt-buffer-in-use-p pb)
+        (push pb remaining))
+       (t (kill-buffer pb))))
+    (when remaining
+      (run-at-time 10 nil
+                   #'unhinged-diffusion--cleanup-prompt-buffers
+                   (nreverse remaining)))))
 
 (defun unhinged-diffusion--set-run-timer (run timer)
   "Install TIMER as RUN's pending timer, cancelling any previous one.
@@ -837,7 +895,15 @@ cleans up.  Returns t if a request was found and aborted."
                 (error (message "Diffusion abort callback error: %S" err)))))
           ;; Kill the underlying process / connection
           (when (functionp abort-fn)
-            (funcall abort-fn)))
+            (condition-case err
+                (funcall abort-fn)
+              (error (message "Diffusion abort error: %S" err))))
+          ;; Drop the registry entry, like `gptel-abort' does, so the
+          ;; request no longer looks in-flight to our buffer checks.
+          (when (processp (car entry))
+            (setf (alist-get (car entry) gptel--request-alist
+                             nil 'remove)
+                  nil)))
         t))))
 
 (defun unhinged-diffusion-cancel (buffer)
