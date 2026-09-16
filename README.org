@@ -98,4 +98,6 @@ And remembered it again just when finishing:
 
 [[./img/cat_step_10.png]]
 
+To prevent that problem we've implemented passing of last steps model output as well as a notes section persisting over steps. See the customisation section about disabling it, but given that this is a problem we're introducing by having the model re-interpret the picture and what has been done for every step it probably is fair to provide that. Disabling it provides a more artsy look, though.
+
 All those pictures show quite well that the rectangle only operation is a problem, so the next big thing would be implementing more flexible area selection for those tools.
